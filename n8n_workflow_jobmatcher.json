@@ -1,0 +1,164 @@
+{
+  "name": "JobMatcher Quotidien + Candidatures Auto",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule-daily",
+      "name": "Planification Quotidienne (09h00)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://jobmatcher-api:8000/run-pipeline",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "http-pipeline-start",
+      "name": "Démarrer Pipeline JobMatcher",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [260, 300]
+    },
+    {
+      "parameters": {
+        "amount": 60
+      },
+      "id": "wait-60s",
+      "name": "Attendre 60s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [520, 300],
+      "webhookId": "jobmatcher-wait-60"
+    },
+    {
+      "parameters": {
+        "url": "http://jobmatcher-api:8000/run-pipeline/status",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "http-pipeline-status",
+      "name": "Statut Pipeline",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [780, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-running",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "running",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-still-running",
+      "name": "Encore en cours ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1040, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://jobmatcher-api:8000/auto-apply?send=true&max=10",
+        "options": {
+          "timeout": 900000
+        }
+      },
+      "id": "http-auto-apply",
+      "name": "Envoyer CV + Lettres (Gmail)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1300, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "const status = $('Statut Pipeline').item.json;\nconst apply = $input.first().json || {};\nconst jobs = status.jobs || [];\nconst lines = [];\nlines.push('🎯 JobMatcher — Rapport quotidien');\nlines.push('');\nlines.push(`Pipeline: ${status.status} | Qualifiées: ${status.qualified_count || 0} | Nouvelles: ${status.new_count || 0}`);\nfor (const j of jobs.slice(0, 8)) {\n  lines.push(`• [${j.match_score}%] ${j.title} — ${j.company}`);\n  if (j.job_url) lines.push(`  ${j.job_url}`);\n}\nlines.push('');\nlines.push('📧 Candidatures Gmail');\nlines.push(`Envoyés: ${apply.sent || 0} | Erreurs: ${apply.errors || 0} | Éligibles: ${apply.eligible || 0}`);\nif (apply.applications) {\n  for (const a of apply.applications.slice(0, 8)) {\n    lines.push(`• [${a.status}] ${a.title} → ${a.rh_email}`);\n  }\n}\nif (status.error) lines.push('', `⚠️ Pipeline error: ${status.error}`);\nreturn [{ json: { text: lines.join('\\n') } }];"
+      },
+      "id": "format-telegram",
+      "name": "Formater Message Telegram",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 200]
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "telegram-alert",
+      "name": "Envoyer Alerte Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1820, 200],
+      "credentials": {
+        "telegramApi": {
+          "id": "TELEGRAM_CREDENTIAL_ID",
+          "name": "Telegram account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Planification Quotidienne (09h00)": {
+      "main": [[{ "node": "Démarrer Pipeline JobMatcher", "type": "main", "index": 0 }]]
+    },
+    "Démarrer Pipeline JobMatcher": {
+      "main": [[{ "node": "Attendre 60s", "type": "main", "index": 0 }]]
+    },
+    "Attendre 60s": {
+      "main": [[{ "node": "Statut Pipeline", "type": "main", "index": 0 }]]
+    },
+    "Statut Pipeline": {
+      "main": [[{ "node": "Encore en cours ?", "type": "main", "index": 0 }]]
+    },
+    "Encore en cours ?": {
+      "main": [
+        [{ "node": "Attendre 60s", "type": "main", "index": 0 }],
+        [{ "node": "Envoyer CV + Lettres (Gmail)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Envoyer CV + Lettres (Gmail)": {
+      "main": [[{ "node": "Formater Message Telegram", "type": "main", "index": 0 }]]
+    },
+    "Formater Message Telegram": {
+      "main": [[{ "node": "Envoyer Alerte Telegram", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Africa/Casablanca"
+  }
+}
