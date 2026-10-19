@@ -20,6 +20,7 @@ import ollama
 
 from config import (
     APPLICATIONS_SENT_PATH,
+    AUTO_APPLY_ALLOW_SUGGESTED,
     AUTO_APPLY_DELAY_SEC,
     AUTO_APPLY_MAX,
     AUTO_APPLY_SEND,
@@ -46,7 +47,23 @@ BLOCKED_EMAIL_PATTERNS = [
     r"@bostonconsultinggroupbcg\.com$",
     r"@amarisconsultingpartofmantu\.com$",
     r"@viessmannclimate\.com$",
+    r"@rekrute\.com$",
+    r"@bayt\.com$",
+    r"@indeed\.",
+    r"@linkedin\.",
 ]
+
+# Entreprises = portails d'annonces (pas un vrai RH)
+JOB_BOARD_COMPANIES = {
+    "rekrute",
+    "bayt",
+    "indeed",
+    "linkedin",
+    "hellowork",
+    "marocannonces",
+    "welcome to the jungle",
+    "wttj",
+}
 
 
 def clean_email(raw: Optional[str]) -> Optional[str]:
@@ -60,8 +77,18 @@ def clean_email(raw: Optional[str]) -> Optional[str]:
     return email.lower()
 
 
+def is_job_board(job: Dict[str, Any]) -> bool:
+    company = (job.get("company") or "").strip().lower()
+    return any(b in company for b in JOB_BOARD_COMPANIES)
+
+
 def is_email_trusted(job: Dict[str, Any], email: str) -> bool:
-    """N'autorise que les emails fiables (offre / Hunter / haute confiance)."""
+    """
+    Accepte un email pour envoi.
+    - Toujours : offre / Hunter / domaine connu
+    - Si AUTO_APPLY_ALLOW_SUGGESTED : aussi les mails déduits (suggérés)
+    Les bounces sont gérés par check-bounces → Telegram.
+    """
     raw = (job.get("rh_email") or "")
     source = (job.get("rh_source") or "").lower()
     confidence = (job.get("confidence") or "").lower()
@@ -69,16 +96,10 @@ def is_email_trusted(job: Dict[str, Any], email: str) -> bool:
     for pat in BLOCKED_EMAIL_PATTERNS:
         if re.search(pat, email, re.IGNORECASE):
             return False
-
-    # Jamais les patterns inventés marqués suggérés
-    if "suggéré" in raw.lower() or "suggere" in raw.lower():
-        return False
-    if "pattern standard" in source:
-        return False
-    if "moyenne" in confidence and "hunter" not in source:
+    if is_job_board(job):
         return False
 
-    # Accepté : mention dans l'offre, Hunter, haute confiance
+    # Accepté : mention dans l'offre, Hunter, haute confiance, domaine connu
     if "mentionné" in source or "mentionne" in source or "directement" in source:
         return True
     if "hunter" in source:
@@ -94,10 +115,17 @@ def is_email_trusted(job: Dict[str, Any], email: str) -> bool:
     if "haute" in confidence or confidence.startswith("9") or confidence.startswith("8") or confidence.startswith("100"):
         return True
 
-    # Confidence numérique type "95%"
     conf_match = re.search(r"(\d+)", confidence)
     if conf_match and int(conf_match.group(1)) >= 70 and "hunter" in source:
         return True
+
+    # Mails déduits (suggérés) — activés par défaut pour envoyer plus
+    if AUTO_APPLY_ALLOW_SUGGESTED:
+        if "suggéré" in raw.lower() or "suggere" in raw.lower() or "pattern standard" in source:
+            # domaine doit avoir l'air d'une vraie boîte (pas trop long / inventé)
+            domain = email.split("@", 1)[-1]
+            if domain.count(".") >= 1 and len(domain) <= 40 and "partof" not in domain:
+                return True
 
     return False
 
@@ -115,16 +143,17 @@ def save_json(path: Path, data: Any) -> None:
 
 
 def load_sent_urls() -> set:
+    """Charge uniquement les URLs d'offres déjà traitées (anti-doublon)."""
     data = load_json(Path(APPLICATIONS_SENT_PATH), [])
-    if isinstance(data, list):
-        urls = set()
-        for item in data:
-            if isinstance(item, str):
-                urls.add(item)
-            elif isinstance(item, dict) and item.get("job_url"):
-                urls.add(item["job_url"])
+    urls: set = set()
+    if not isinstance(data, list):
         return urls
-    return set()
+    for item in data:
+        if isinstance(item, str) and item.strip():
+            urls.add(item.strip())
+        elif isinstance(item, dict) and item.get("job_url"):
+            urls.add(str(item["job_url"]).strip())
+    return urls
 
 
 def append_sent_record(record: Dict[str, Any]) -> None:
@@ -223,29 +252,43 @@ def send_email(msg: MIMEMultipart) -> None:
         server.send_message(msg)
 
 
-def select_eligible_jobs(jobs: List[Dict[str, Any]], sent_urls: set) -> tuple[List[Dict], List[str]]:
+def select_eligible_jobs(
+    jobs: List[Dict[str, Any]],
+    sent_urls: set,
+) -> tuple[List[Dict], List[str]]:
+    """Anti-doublon uniquement sur la même URL d'offre."""
+    seen_urls = set(sent_urls)
     eligible = []
     skipped_reasons = []
-    for job in jobs:
+    ranked = sorted(jobs, key=lambda j: -int(j.get("match_score") or 0))
+
+    for job in ranked:
         score = int(job.get("match_score") or 0)
         url = (job.get("job_url") or "").strip()
+        company = job.get("company") or ""
+        title = job.get("title") or ""
+
         if score < MIN_APPLY_SCORE:
             continue
-        if url and url in sent_urls:
-            skipped_reasons.append(f"déjà envoyé: {job.get('company')} — {job.get('title')}")
+        if url and url in seen_urls:
+            skipped_reasons.append(f"URL déjà envoyée: {company} — {title}")
             continue
+
         email = clean_email(job.get("rh_email"))
         if not email:
-            skipped_reasons.append(f"email invalide: {job.get('company')}")
+            skipped_reasons.append(f"email invalide: {company}")
             continue
         if not is_email_trusted(job, email):
-            skipped_reasons.append(f"email non fiable: {email} ({job.get('company')})")
+            skipped_reasons.append(f"email non fiable: {email} ({company})")
             continue
+
+        if url:
+            seen_urls.add(url)
+
         job = dict(job)
         job["_clean_email"] = email
         eligible.append(job)
-    # Meilleurs scores d'abord
-    eligible.sort(key=lambda j: -int(j.get("match_score") or 0))
+
     return eligible, skipped_reasons
 
 
@@ -297,7 +340,10 @@ def run(send: bool = False, max_apps: Optional[int] = None) -> Dict[str, Any]:
     summary["eligible"] = len(eligible)
     print(f"[*] Offres totales        : {len(jobs)}")
     print(f"[*] Score min candidature : {MIN_APPLY_SCORE}%")
-    print(f"[*] Emails fiables OK     : {len(eligible)}")
+    print(
+        f"[*] Emails OK à envoyer   : {len(eligible)} "
+        f"(suggérés={AUTO_APPLY_ALLOW_SUGGESTED})"
+    )
     print(f"[*] Plafond envoi         : {limit}")
     if skipped:
         print(f"[*] Ignorées (échantillon): {len(skipped)}")

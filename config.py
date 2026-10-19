@@ -27,5 +27,13 @@ AUTO_APPLY_SEND: bool = os.getenv("AUTO_APPLY_SEND", "false").lower() in ("1", "
 AUTO_APPLY_MAX: int = int(os.getenv("AUTO_APPLY_MAX", "15"))
 AUTO_APPLY_DELAY_SEC: int = int(os.getenv("AUTO_APPLY_DELAY_SEC", "25"))
 MIN_APPLY_SCORE: int = int(os.getenv("MIN_APPLY_SCORE", "80"))
+# true = envoie aussi les mails "suggérés" (plus de candidatures ; bounces → Telegram)
+AUTO_APPLY_ALLOW_SUGGESTED: bool = os.getenv(
+    "AUTO_APPLY_ALLOW_SUGGESTED", "true"
+).lower() in ("1", "true", "yes")
 APPLICATIONS_SENT_PATH: str = str(base_dir / "applications_sent.json")
 COVER_LETTERS_DIR: str = str(base_dir / "cover_letters")
+TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
+IMAP_HOST: str = os.getenv("IMAP_HOST", "imap.gmail.com")
+IMAP_PORT: int = int(os.getenv("IMAP_PORT", "993"))

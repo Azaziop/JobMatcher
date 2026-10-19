@@ -1,6 +1,19 @@
 {
-  "name": "JobMatcher Quotidien + Candidatures Auto",
+  "name": "JobMatcher — Tout visible dans n8n",
   "nodes": [
+    {
+      "parameters": {
+        "content": "## JobMatcher — tout se voit dans n8n\n\n1. Clique une **exécution**\n2. Ouvre chaque nœud 📊 / 📧 / ⚠️\n3. Onglet **Table** = une ligne par offre / mail / échec\n\nExcel = fichier sur l’API + confirmation dans le nœud 4.",
+        "height": 280,
+        "width": 360,
+        "color": 5
+      },
+      "id": "sticky-help",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-40, 40]
+    },
     {
       "parameters": {
         "rule": {
@@ -13,48 +26,52 @@
         }
       },
       "id": "schedule-daily",
-      "name": "Planification Quotidienne (09h00)",
+      "name": "Tous les jours 09h00",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
-      "position": [0, 300]
+      "position": [0, 360]
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "http://jobmatcher-api:8000/run-pipeline",
-        "options": {
-          "timeout": 30000
-        }
+        "url": "http://jobmatcher-api:8000/run-daily",
+        "options": { "timeout": 30000 }
       },
-      "id": "http-pipeline-start",
-      "name": "Démarrer Pipeline JobMatcher",
+      "id": "http-run-daily",
+      "name": "1. Lancer cycle",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [260, 300]
+      "position": [260, 360]
     },
     {
-      "parameters": {
-        "amount": 60
-      },
-      "id": "wait-60s",
-      "name": "Attendre 60s",
+      "parameters": { "amount": 45 },
+      "id": "wait-45",
+      "name": "Attendre 45s",
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
-      "position": [520, 300],
-      "webhookId": "jobmatcher-wait-60"
+      "position": [500, 360],
+      "webhookId": "jobmatcher-wait-status"
     },
     {
       "parameters": {
-        "url": "http://jobmatcher-api:8000/run-pipeline/status",
-        "options": {
-          "timeout": 15000
-        }
+        "url": "http://jobmatcher-api:8000/run-daily/status",
+        "options": { "timeout": 15000 }
       },
-      "id": "http-pipeline-status",
-      "name": "Statut Pipeline",
+      "id": "http-status",
+      "name": "2. Statut (compteurs)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [780, 300]
+      "position": [740, 360]
+    },
+    {
+      "parameters": {
+        "jsCode": "const s = $input.first().json;\nconst p = s.pipeline || {};\nconst a = s.auto_apply || {};\nreturn [{\n  json: {\n    etape: 'STATUT',\n    done: s.done,\n    status: s.status,\n    scrapees_brutes: p.raw_count ?? 0,\n    prefiltrees: p.prefilter_count ?? 0,\n    qualifiees: p.qualified_count ?? 0,\n    nouvelles: p.new_count ?? 0,\n    doublons_retires: p.duplicates_removed ?? 0,\n    mails_envoyes: a.sent ?? 0,\n    mails_erreurs: a.errors ?? 0,\n    eligibles: a.eligible ?? 0,\n    pipeline_progress: p.progress || '',\n    apply_progress: a.progress || '',\n  }\n}];"
+      },
+      "id": "code-status-view",
+      "name": "📊 Voir compteurs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [980, 240]
     },
     {
       "parameters": {
@@ -62,16 +79,17 @@
           "options": {
             "caseSensitive": true,
             "leftValue": "",
-            "typeValidation": "strict"
+            "typeValidation": "loose"
           },
           "conditions": [
             {
-              "id": "cond-running",
-              "leftValue": "={{ $json.status }}",
-              "rightValue": "running",
+              "id": "cond-not-done",
+              "leftValue": "={{ $json.done }}",
+              "rightValue": false,
               "operator": {
-                "type": "string",
-                "operation": "equals"
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
               }
             }
           ],
@@ -79,82 +97,369 @@
         },
         "options": {}
       },
-      "id": "if-still-running",
+      "id": "if-not-done",
       "name": "Encore en cours ?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
-      "position": [1040, 300]
+      "position": [980, 420]
+    },
+    {
+      "parameters": {
+        "url": "http://jobmatcher-api:8000/offers",
+        "options": { "timeout": 30000 }
+      },
+      "id": "http-offers",
+      "name": "3. Charger offres",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1240, 520]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\nconst jobs = d.jobs || [];\nif (!jobs.length) {\n  return [{ json: {\n    etape: 'OFFRES',\n    message: 'Aucune offre qualifiée',\n    total: 0,\n  }}];\n}\nreturn jobs.map((j, i) => ({\n  json: {\n    etape: 'OFFRE',\n    n: i + 1,\n    total: jobs.length,\n    match_score: j.match_score,\n    title: j.title,\n    company: j.company,\n    location: j.location,\n    rh_email: j.rh_email,\n    rh_source: j.rh_source,\n    confidence: j.confidence,\n    job_url: j.job_url,\n    date_posted: j.date_posted || '',\n    doublons_retires_pipeline: d.duplicates_removed ?? 0,\n    nouvelles: d.new_count ?? 0,\n  }\n}));"
+      },
+      "id": "code-offers-table",
+      "name": "📊 TABLEAU OFFRES (1 ligne = 1 offre)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1480, 360]
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "http://jobmatcher-api:8000/auto-apply?send=true&max=10",
-        "options": {
-          "timeout": 900000
-        }
+        "url": "http://jobmatcher-api:8000/offers/export",
+        "options": { "timeout": 60000 }
       },
-      "id": "http-auto-apply",
-      "name": "Envoyer CV + Lettres (Gmail)",
+      "id": "http-excel",
+      "name": "4. Excel (sauvegarde)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1300, 200]
+      "position": [1480, 560]
     },
     {
       "parameters": {
-        "jsCode": "const status = $('Statut Pipeline').item.json;\nconst apply = $input.first().json || {};\nconst jobs = status.jobs || [];\nconst lines = [];\nlines.push('🎯 JobMatcher — Rapport quotidien');\nlines.push('');\nlines.push(`Pipeline: ${status.status} | Qualifiées: ${status.qualified_count || 0} | Nouvelles: ${status.new_count || 0}`);\nfor (const j of jobs.slice(0, 8)) {\n  lines.push(`• [${j.match_score}%] ${j.title} — ${j.company}`);\n  if (j.job_url) lines.push(`  ${j.job_url}`);\n}\nlines.push('');\nlines.push('📧 Candidatures Gmail');\nlines.push(`Envoyés: ${apply.sent || 0} | Erreurs: ${apply.errors || 0} | Éligibles: ${apply.eligible || 0}`);\nif (apply.applications) {\n  for (const a of apply.applications.slice(0, 8)) {\n    lines.push(`• [${a.status}] ${a.title} → ${a.rh_email}`);\n  }\n}\nif (status.error) lines.push('', `⚠️ Pipeline error: ${status.error}`);\nreturn [{ json: { text: lines.join('\\n') } }];"
+        "jsCode": "const d = $input.first().json;\nreturn [{\n  json: {\n    etape: 'EXCEL',\n    ok: !!d.ok,\n    nb_offres: d.count,\n    fichier_xlsx: d.xlsx,\n    fichier_csv: d.csv,\n    fichier_json: d.json,\n    message: `Excel sauvegardé: ${d.count} offres → ${d.xlsx}`,\n  }\n}];"
       },
-      "id": "format-telegram",
-      "name": "Formater Message Telegram",
+      "id": "code-excel-view",
+      "name": "📊 Voir Excel sauvegardé",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1560, 200]
+      "position": [1720, 560]
     },
     {
       "parameters": {
-        "operation": "sendMessage",
-        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
-        "text": "={{ $json.text }}",
-        "additionalFields": {
-          "appendAttribution": false
+        "method": "POST",
+        "url": "http://jobmatcher-api:8000/check-bounces?limit=50",
+        "options": { "timeout": 120000 }
+      },
+      "id": "http-bounces",
+      "name": "5. Check bounces Gmail",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1960, 560]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\nconst bounced = d.bounced || d.results || d.notified || [];\nconst list = Array.isArray(bounced) ? bounced : [];\nconst summary = [{\n  json: {\n    etape: 'BOUNCES_RESUME',\n    scanned: d.scanned ?? d.checked ?? null,\n    new_bounces: d.new_bounces ?? list.length,\n    notified_telegram: d.notified_count ?? d.telegram ?? null,\n    message: d.message || 'Scan bounces terminé',\n    raw_keys: Object.keys(d),\n  }\n}];\nif (!list.length) return summary;\nconst rows = list.map((b, i) => ({\n  json: {\n    etape: 'BOUNCE',\n    n: i + 1,\n    title: b.title || b.job_title || '',\n    company: b.company || '',\n    rh_email: b.rh_email || b.email || '',\n    job_url: b.job_url || b.url || '',\n    status: b.status || 'bounced',\n  }\n}));\nreturn summary.concat(rows);"
+      },
+      "id": "code-bounces-view",
+      "name": "📊 Voir bounces détectés",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2200, 420]
+    },
+    {
+      "parameters": {
+        "url": "http://jobmatcher-api:8000/applications",
+        "options": { "timeout": 30000 }
+      },
+      "id": "http-apps",
+      "name": "6. Rapport candidatures",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2200, 620]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\nreturn [{\n  json: {\n    etape: 'RAPPORT_MAILS',\n    ok: d.ok,\n    total: d.total,\n    sent: d.sent,\n    bounced: d.bounced,\n    error: d.error,\n    excel_apps: d.xlsx,\n    message: d.ok\n      ? `✅ Tous OK — ${d.sent} mails envoyés/reçus`\n      : `⚠️ ${d.bounced} bounce(s) + ${d.error} erreur(s) sur ${d.total}`,\n  }\n}];"
+      },
+      "id": "code-apps-summary",
+      "name": "📊 Résumé sent / bounced",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2440, 480]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $('6. Rapport candidatures').first().json;\nconst apps = d.sent_apps || [];\nif (!apps.length) {\n  return [{ json: { etape: 'MAIL_ENVOYE', message: 'Aucun mail sent', total: 0 } }];\n}\nreturn apps.map((a, i) => ({\n  json: {\n    etape: 'MAIL_ENVOYE',\n    n: i + 1,\n    total: apps.length,\n    status: a.status,\n    title: a.title,\n    company: a.company,\n    rh_email: a.rh_email,\n    match_score: a.match_score,\n    job_url: a.job_url,\n    sent_at: a.sent_at || '',\n  }\n}));"
+      },
+      "id": "code-sent-table",
+      "name": "📧 TABLEAU MAILS ENVOYÉS",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2440, 640]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $('6. Rapport candidatures').first().json;\nconst failed = d.failed_for_telegram || [];\nconst bounced = d.bounced_apps || [];\nconst errors = d.error_apps || [];\nconst all = failed.length ? failed : [...bounced, ...errors];\nif (!all.length) {\n  return [{ json: {\n    etape: 'ECHEC',\n    message: 'Aucun échec — rien à envoyer sur Telegram',\n    total: 0,\n    has_failures: false,\n  }}];\n}\nreturn all.map((a, i) => ({\n  json: {\n    etape: 'ECHEC',\n    n: i + 1,\n    total: all.length,\n    has_failures: true,\n    status: a.status,\n    title: a.title,\n    company: a.company,\n    rh_email: a.rh_email,\n    job_url: a.job_url,\n  }\n}));"
+      },
+      "id": "code-failed-table",
+      "name": "⚠️ TABLEAU ÉCHECS (URL + job)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2680, 640]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-ok",
+              "leftValue": "={{ $('6. Rapport candidatures').item.json.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-all-ok",
+      "name": "Tous les mails OK ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [2680, 480]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $('6. Rapport candidatures').first().json;\nreturn [{ json: {\n  etape: 'FIN_OK',\n  message: `✅ Terminé — ${d.sent} mails OK, 0 échec`,\n  sent: d.sent,\n  bounced: d.bounced,\n  error: d.error,\n}}];"
+      },
+      "id": "code-ok",
+      "name": "✅ FIN — tout reçu",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2920, 380]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://jobmatcher-api:8000/applications/notify-failed",
+        "options": { "timeout": 60000 }
+      },
+      "id": "http-notify-failed",
+      "name": "7. Telegram échecs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2920, 560]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\nconst failed = d.failed || [];\nconst head = [{\n  json: {\n    etape: 'TELEGRAM',\n    ok: d.ok,\n    notified: d.notified,\n    message: d.message || `${d.notified || 0} job(s) envoyés sur Telegram`,\n  }\n}];\nif (!failed.length) return head;\nreturn head.concat(failed.map((a, i) => ({\n  json: {\n    etape: 'TELEGRAM_JOB',\n    n: i + 1,\n    title: a.title,\n    company: a.company,\n    rh_email: a.rh_email,\n    job_url: a.job_url,\n    status: a.status,\n  }\n})));"
+      },
+      "id": "code-telegram-view",
+      "name": "📱 Voir ce qui est parti sur Telegram",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3160, 560]
+    },
+    {
+      "parameters": {
+        "content": "## Comment lire\n\n| Nœud | Ce que tu vois (Table) |\n|------|-------------------------|\n| 📊 Voir compteurs | scrapées / qualifiées / mails |\n| 📊 TABLEAU OFFRES | **1 ligne = 1 offre** |\n| 📊 Voir Excel | chemin du .xlsx |\n| 📧 MAILS ENVOYÉS | **1 ligne = 1 mail** |\n| ⚠️ ÉCHECS | URL + titre non reçus |\n| 📱 Telegram | jobs notifiés |",
+        "height": 320,
+        "width": 340,
+        "color": 4
+      },
+      "id": "sticky-read",
+      "name": "Sticky Note1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [1480, 40]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "30 * * * *"
+            }
+          ]
         }
       },
-      "id": "telegram-alert",
-      "name": "Envoyer Alerte Telegram",
-      "type": "n8n-nodes-base.telegram",
+      "id": "schedule-bounces",
+      "name": "Bounces chaque heure",
+      "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
-      "position": [1820, 200],
-      "credentials": {
-        "telegramApi": {
-          "id": "TELEGRAM_CREDENTIAL_ID",
-          "name": "Telegram account"
-        }
-      }
+      "position": [0, 780]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://jobmatcher-api:8000/check-bounces?limit=50",
+        "options": { "timeout": 120000 }
+      },
+      "id": "http-bounces-hourly",
+      "name": "Check bounces horaire",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [280, 780]
+    },
+    {
+      "parameters": {
+        "url": "http://jobmatcher-api:8000/applications",
+        "options": { "timeout": 30000 }
+      },
+      "id": "http-apps-hourly",
+      "name": "Rapport (horaire)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [520, 780]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\nconst failed = d.failed_for_telegram || [];\nreturn [{\n  json: {\n    etape: 'HORAIRE',\n    ok: d.ok,\n    sent: d.sent,\n    bounced: d.bounced,\n    error: d.error,\n    has_failures: failed.length > 0,\n    failed_count: failed.length,\n  }\n}].concat(failed.map((a, i) => ({\n  json: {\n    etape: 'HORAIRE_ECHEC',\n    n: i + 1,\n    title: a.title,\n    company: a.company,\n    rh_email: a.rh_email,\n    job_url: a.job_url,\n  }\n})));"
+      },
+      "id": "code-hourly-view",
+      "name": "📊 Voir échecs (horaire)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [760, 780]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-has-failed",
+              "leftValue": "={{ $('Rapport (horaire)').item.json.bounced + $('Rapport (horaire)').item.json.error }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-has-failed",
+      "name": "Des échecs ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1000, 780]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://jobmatcher-api:8000/applications/notify-failed",
+        "options": { "timeout": 60000 }
+      },
+      "id": "http-notify-hourly",
+      "name": "Telegram (horaire)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1240, 700]
     }
   ],
   "connections": {
-    "Planification Quotidienne (09h00)": {
-      "main": [[{ "node": "Démarrer Pipeline JobMatcher", "type": "main", "index": 0 }]]
+    "Tous les jours 09h00": {
+      "main": [[{ "node": "1. Lancer cycle", "type": "main", "index": 0 }]]
     },
-    "Démarrer Pipeline JobMatcher": {
-      "main": [[{ "node": "Attendre 60s", "type": "main", "index": 0 }]]
+    "1. Lancer cycle": {
+      "main": [[{ "node": "Attendre 45s", "type": "main", "index": 0 }]]
     },
-    "Attendre 60s": {
-      "main": [[{ "node": "Statut Pipeline", "type": "main", "index": 0 }]]
+    "Attendre 45s": {
+      "main": [[{ "node": "2. Statut (compteurs)", "type": "main", "index": 0 }]]
     },
-    "Statut Pipeline": {
-      "main": [[{ "node": "Encore en cours ?", "type": "main", "index": 0 }]]
+    "2. Statut (compteurs)": {
+      "main": [
+        [
+          { "node": "📊 Voir compteurs", "type": "main", "index": 0 },
+          { "node": "Encore en cours ?", "type": "main", "index": 0 }
+        ]
+      ]
     },
     "Encore en cours ?": {
       "main": [
-        [{ "node": "Attendre 60s", "type": "main", "index": 0 }],
-        [{ "node": "Envoyer CV + Lettres (Gmail)", "type": "main", "index": 0 }]
+        [{ "node": "Attendre 45s", "type": "main", "index": 0 }],
+        [{ "node": "3. Charger offres", "type": "main", "index": 0 }]
       ]
     },
-    "Envoyer CV + Lettres (Gmail)": {
-      "main": [[{ "node": "Formater Message Telegram", "type": "main", "index": 0 }]]
+    "3. Charger offres": {
+      "main": [
+        [
+          { "node": "📊 TABLEAU OFFRES (1 ligne = 1 offre)", "type": "main", "index": 0 },
+          { "node": "4. Excel (sauvegarde)", "type": "main", "index": 0 }
+        ]
+      ]
     },
-    "Formater Message Telegram": {
-      "main": [[{ "node": "Envoyer Alerte Telegram", "type": "main", "index": 0 }]]
+    "4. Excel (sauvegarde)": {
+      "main": [[{ "node": "📊 Voir Excel sauvegardé", "type": "main", "index": 0 }]]
+    },
+    "📊 Voir Excel sauvegardé": {
+      "main": [[{ "node": "5. Check bounces Gmail", "type": "main", "index": 0 }]]
+    },
+    "5. Check bounces Gmail": {
+      "main": [
+        [
+          { "node": "📊 Voir bounces détectés", "type": "main", "index": 0 },
+          { "node": "6. Rapport candidatures", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "6. Rapport candidatures": {
+      "main": [
+        [
+          { "node": "📊 Résumé sent / bounced", "type": "main", "index": 0 },
+          { "node": "📧 TABLEAU MAILS ENVOYÉS", "type": "main", "index": 0 },
+          { "node": "⚠️ TABLEAU ÉCHECS (URL + job)", "type": "main", "index": 0 },
+          { "node": "Tous les mails OK ?", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Tous les mails OK ?": {
+      "main": [
+        [{ "node": "✅ FIN — tout reçu", "type": "main", "index": 0 }],
+        [{ "node": "7. Telegram échecs", "type": "main", "index": 0 }]
+      ]
+    },
+    "7. Telegram échecs": {
+      "main": [[{ "node": "📱 Voir ce qui est parti sur Telegram", "type": "main", "index": 0 }]]
+    },
+    "Bounces chaque heure": {
+      "main": [[{ "node": "Check bounces horaire", "type": "main", "index": 0 }]]
+    },
+    "Check bounces horaire": {
+      "main": [[{ "node": "Rapport (horaire)", "type": "main", "index": 0 }]]
+    },
+    "Rapport (horaire)": {
+      "main": [
+        [
+          { "node": "📊 Voir échecs (horaire)", "type": "main", "index": 0 },
+          { "node": "Des échecs ?", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Des échecs ?": {
+      "main": [
+        [{ "node": "Telegram (horaire)", "type": "main", "index": 0 }],
+        []
+      ]
     }
   },
   "settings": {

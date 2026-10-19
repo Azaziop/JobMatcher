@@ -18,6 +18,8 @@ services:
       - AUTO_APPLY_MAX=10
       - AUTO_APPLY_DELAY_SEC=25
       - MIN_APPLY_SCORE=80
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
